@@ -1,16 +1,16 @@
 # ShockFlip Research Engine
 
-This project implements the ShockFlip alpha specification:
+This project implements the ShockFlip alpha specification.
 
 - Tick ingestion (data/ticks/BTCUSDT/*.csv)
 - 1-minute bar aggregation
 - Order-flow features (Q+, Q-, delta, imbalance, z-scores)
-- ShockFlip detector with:
+- ShockFlip detector (v1.0) with:
   - z_window = 240
-  - z_band = 2.5
-  - jump_band = 3.0
-  - persistence = 6 bars @ 60%
-  - dynamic threshold (99th percentile)
+  - z_band = 2.0
+  - jump_band = 2.0
+  - persistence = 4 bars @ 50%
+  - dynamic thresholds: disabled
   - Donchian(120) extremes
 - ATR(60)-based risk with side-aware TP/SL:
   - Long: TP = 27.5 * ATR, SL = 9.0 * ATR
@@ -64,6 +64,14 @@ python scripts/run_event_study.py --config configs/strategies_shockflip_only.yam
 # Parity replay harness (research vs "live-style" engine)
 python scripts/run_parity_replay.py --config configs/strategies_shockflip_only.yaml
 ```
+
+## ShockFlip v1.0 Reference
+
+- Spec: (z_band=2.0, jump_band=2.0, persistence=4 @ 0.5, Donchian(120), ATR(60), current TP/SL)
+- Event frequency: see notes.md for latest figures
+- Backtest stats: see notes.md for latest n / win / PF on the reference slice
+
+To print lightweight diagnostics during development, add `--debug` to the runner commands. To disable progress bars, add `--no-progress`.
 
 Backtest trades are written to:
 
