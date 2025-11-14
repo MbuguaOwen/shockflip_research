@@ -1,0 +1,60 @@
+# Single source of truth for ShockFlip alpha configuration.
+
+data:
+  include: data.yaml
+
+slippage_bp: 0.5
+fees:
+  taker_bp: 1.0
+
+risk:
+  atr_window: 60
+  cooldown_bars: 10
+  long:
+    tp_mult: 27.5
+    sl_mult: 9.0
+  short:
+    tp_mult: 15.0
+    sl_mult: 6.5
+
+shock_flip:
+  source: "imbalance"
+  z_window: 240
+  z_band: 2.5
+  jump_band: 3.0           # 2.8 only if coverage too thin
+  persistence_bars: 6
+  persistence_ratio: 0.60
+  dynamic_thresholds:
+    enabled: true
+    percentile: 0.99
+  location_filter:
+    donchian_window: 120
+    require_extreme: true
+
+# Additional filters are defined but disabled by default.
+filters:
+  atr_percentile:
+    enabled: false
+    window: 5000
+    low: 0.30
+    high: 0.80
+  macro_regime:
+    enabled: false
+
+session:
+  utc_blocks: [[0, 24]]
+
+# Absorption logic placeholder: currently NOT used as entry gate.
+ops:
+  absorption_opposite_exit_bars: 0
+
+absorption_reversal:
+  horizons:
+    long:  [12, 18, 60]
+    short: [6, 12]
+
+event_study:
+  horizons:
+    long:  [12, 18, 60]
+    short: [6, 12]
+  baseline_n_random: 2000
