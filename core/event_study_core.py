@@ -103,11 +103,14 @@ def run_event_study(
         if side == 0:
             continue
 
+        # Per-event z at the same index; default to NaN series if missing
+        z_series = df["shockflip_z"] if "shockflip_z" in df.columns else pd.Series(np.nan, index=df.index)
+
         base = {
             "idx": i,
             "timestamp": df["timestamp"].iloc[i],
             "side": side,
-            "shockflip_z": float(df.get("shockflip_z", pd.Series([np.nan])).iloc[0]),
+            "shockflip_z": float(z_series.iloc[i]),
         }
 
         if side == 1:
@@ -123,6 +126,21 @@ def run_event_study(
 
     p.close()
     events_df = pd.DataFrame(events)
+
+    # Handle zero-event case gracefully: return empty summary with columns
+    if events_df.empty:
+        summary_df = pd.DataFrame(
+            columns=[
+                "horizon",
+                "side",
+                "n",
+                "mean_event",
+                "t_event",
+                "mean_baseline",
+                "lift",
+            ]
+        )
+        return events_df, summary_df
 
     # Baseline stats
     baseline = _compute_baseline_returns(
