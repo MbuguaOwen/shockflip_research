@@ -85,3 +85,21 @@ Event-study outputs:
 Parity replay writes a simple report to:
 
 - `results/parity/parity_report.json`
+
+## Parameter Sweep (Micro-grid)
+
+Run a 27-point micro-grid around ShockFlip v1.0 to inspect event frequency, backtest stats, and event-study lifts:
+
+```bash
+python scripts/run_shockflip_sweep.py --config configs/strategies_shockflip_only.yaml --out results/sweeps/shockflip_micro_grid.csv
+```
+
+Grid:
+- `z_band` in {1.8, 2.0, 2.2}
+- `jump_band` in {1.8, 2.0, 2.2}
+- `persistence_bars` in {3, 4, 5}
+
+Recorded per grid point:
+- Detector: n_shockflip_long, n_shockflip_short, n_events
+- Backtest: n_trades, win_rate, pf
+- Event-study: counts/means/lifts for long {12,18,60} and short {6,12}

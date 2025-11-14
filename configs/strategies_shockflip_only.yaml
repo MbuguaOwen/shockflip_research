@@ -1,4 +1,4 @@
-﻿# ShockFlip v1.0 – locked spec
+﻿# ShockFlip v1.1 - locked spec
 # Single source of truth for ShockFlip alpha configuration.
 
 data:
@@ -21,9 +21,10 @@ risk:
 shock_flip:
   source: "imbalance"
   z_window: 240
-  z_band: 2.0
+  # v1.1 research spec (mid-intensity ShockFlip)
+  z_band: 1.8
   jump_band: 2.0
-  persistence_bars: 4
+  persistence_bars: 3
   persistence_ratio: 0.50
   dynamic_thresholds:
     enabled: false
