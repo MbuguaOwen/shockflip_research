@@ -64,8 +64,23 @@ def _load_single_tick_csv(path: str) -> pd.DataFrame:
         # Treat as non-tick CSV; caller may fallback to bars
         raise ValueError(f"Missing 'is_buyer_maker' column in {path}")
 
-    # Timestamp hygiene: accept epoch millis or iso strings
-    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    # Timestamp hygiene: accept epoch millis or ISO strings
+    ts = df["ts"]
+    try:
+        from pandas.api import types as pdt
+        is_numeric = pdt.is_numeric_dtype(ts)
+    except Exception:
+        # Fallback if pandas API surface changes
+        is_numeric = ts.dtype.kind in ("i", "u", "f")
+
+    if is_numeric:
+        # Treat numeric timestamps as epoch milliseconds (Binance-style)
+        # Cast to int64 to avoid float rounding artifacts
+        df["ts"] = pd.to_datetime(ts.astype("int64"), unit="ms", utc=True, errors="coerce")
+    else:
+        # ISO8601-like strings
+        df["ts"] = pd.to_datetime(ts, utc=True, errors="coerce")
+
     df = df.dropna(subset=["ts"])
 
     # Normalize is_buyer_maker to bool robustly

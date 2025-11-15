@@ -122,9 +122,9 @@ def main():
     print(f"[Bars] {len(bars):,} bars (source={source})")
 
     # 3) Define micro-grid around v1.0 baseline
-    z_grid = [2.0, 2.5, 3.0]
-    jump_grid = [2.0, 2.5, 3.0]
-    pers_bars_grid = [3, 6, 8]
+    z_grid = [1.8, 2.0, 2.5]
+    jump_grid = [1.8, 2.3, 3.0]
+    pers_bars_grid = [3, 4, 5]
 
     rows = []
 
