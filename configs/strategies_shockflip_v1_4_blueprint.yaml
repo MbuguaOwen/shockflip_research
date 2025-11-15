@@ -1,8 +1,4 @@
-﻿# ShockFlip v1.4 - BTC research spec
-# Changes from v1.3:
-#   - H1: require prior_flow_sign == -1 for entries (filters.prior_flow_sign.enabled=true)
-#   - EVERYTHING ELSE unchanged
-# Single source of truth for ShockFlip alpha configuration.
+# ShockFlip v1.4 – BTC research spec (BLUEPRINT)
 
 data:
   include: data.yaml
@@ -21,14 +17,19 @@ risk:
     tp_mult: 15.0
     sl_mult: 6.5
 
+management:
+  # H5/H7 – Breakeven stop (Zombie Killer)
+  # 0.0 disables; 1.0R recommended starting point
+  be_at_r: 1.0
+
 shock_flip:
   source: "imbalance"
   z_window: 240
-  # v1.3 - BTC research spec
+  # v1.3 detector baseline
   z_band: 2.0
   jump_band: 2.0
   persistence_bars: 3
-  persistence_ratio: 0.60  
+  persistence_ratio: 0.60
   dynamic_thresholds:
     enabled: false
     percentile: 0.99
@@ -36,7 +37,6 @@ shock_flip:
     donchian_window: 120
     require_extreme: true
 
-# Additional filters are defined but disabled by default.
 filters:
   atr_percentile:
     enabled: false
@@ -45,29 +45,22 @@ filters:
     high: 0.80
   macro_regime:
     enabled: false
+  # H1 (promoted): engine reads filters.prior_flow_sign
   prior_flow_sign:
     enabled: true
     required_sign: -1
+  # H2 (candidate): analysis suggests excluding this "dead zone"
+  h2_div_dead_zone:
+    enabled: true
+    min: -0.0741
+    max: 0.26
 
 session:
   utc_blocks: [[0, 24]]
-
-# Absorption logic placeholder: currently NOT used as entry gate.
-ops:
-  absorption_opposite_exit_bars: 0
-
-absorption_reversal:
-  horizons:
-    long:  [12, 18, 60]
-    short: [6, 12]
 
 event_study:
   horizons:
     long:  [12, 18, 60]
     short: [6, 12]
   baseline_n_random: 2000
-
-
-
-
 

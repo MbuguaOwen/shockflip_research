@@ -73,6 +73,12 @@ python scripts/run_parity_replay.py --config configs/strategies_shockflip_only.y
 
 To print lightweight diagnostics during development, add `--debug` to the runner commands. To disable progress bars, add `--no-progress`.
 
+## Research Blueprint (v1.0 → v1.4)
+
+- See `docs/shockflip_v1_blueprint.md` for a complete, reproducible walkthrough from v1.0 to v1.4.
+- Includes best‑practice guidance (schema verification, defensive analysis, one‑promotion‑per‑iteration), and ready‑to‑run commands.
+- A blueprint config for v1.4 lives at `configs/strategies_shockflip_v1_4_blueprint.yaml` (H1 promoted; H2/BE listed as candidates).
+
 Backtest trades are written to:
 
 - `results/backtest/trades.csv`

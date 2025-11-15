@@ -1,4 +1,4 @@
-symbol: SOLUSDT
-tick_dir: data/ticks/SOLUSDT_OOS
+symbol: BTCUSDT
+tick_dir: data/ticks/BTCUSDT_IS 
 timeframe: 1min
 tz: UTC

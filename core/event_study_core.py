@@ -113,6 +113,11 @@ def run_event_study(
             "shockflip_z": float(z_series.iloc[i]),
         }
 
+        # H1–H3: add pre-context features if present
+        for col in ["prior_flow_sign", "price_flow_div", "atr_pct"]:
+            if col in df.columns:
+                base[col] = df[col].iloc[i]
+
         if side == 1:
             ret_map = _compute_horizon_returns(bars, i, side=1, horizons=long_h)
             for h, r in ret_map.items():

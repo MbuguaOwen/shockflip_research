@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 from .barriers import FeesConfig, RiskConfig, build_barriers, compute_trade_pnl, enforce_tp_sl_invariants
-from .features import add_core_features
+from .features import add_core_features, add_hypothesis_features
 from .shockflip_detector import ShockFlipConfig, detect_shockflip_signals
 from .progress import get_progress
 
@@ -25,12 +25,19 @@ def prepare_features_for_backtest(
     bars: pd.DataFrame,
     cfg: BacktestConfig,
 ) -> pd.DataFrame:
-    """Compute all features required for ShockFlip backtest."""
+    """Compute all features required for ShockFlip backtest + H1–H3."""
     df = add_core_features(
         bars,
         z_window=cfg.shockflip.z_window,
         atr_window=cfg.risk.atr_window,
         donchian_window=cfg.shockflip.donchian_window,
+    )
+    # H1–H3: pre-context research features (do not affect signals)
+    df = add_hypothesis_features(
+        df,
+        prior_flow_window=60,
+        div_window=60,
+        atr_pct_window=5000,
     )
     df = detect_shockflip_signals(df, cfg.shockflip)
     return df
@@ -64,6 +71,16 @@ def _simulate_trades(
         if side == 0:
             continue
 
+        # H1 entry filter: require prior_flow_sign == required_sign if configured
+        required_sign = getattr(cfg, "_h1_prior_flow_required_sign", None)
+        if required_sign is not None:
+            pfs = row.get("prior_flow_sign")
+            try:
+                if pd.isna(pfs) or int(pfs) != int(required_sign):
+                    continue
+            except Exception:
+                continue
+
         atr = float(row.get("atr", float("nan")))
         if not np.isfinite(atr) or atr <= 0:
             continue
@@ -71,6 +88,11 @@ def _simulate_trades(
         entry_idx = i
         entry_ts = row["timestamp"]
         entry_price = float(row["close"])
+
+        # H5–H7: track path statistics for this trade
+        best_fav = 0.0   # max favourable excursion (price units, >= 0)
+        worst_adv = 0.0  # most adverse excursion (price units, <= 0)
+        time_to_mfe = 0  # bars from entry until best_fav
 
         # Simulate forward until barrier hit or we run out of data
         exit_idx = None
@@ -84,6 +106,20 @@ def _simulate_trades(
             bar = df.iloc[j]
             high = float(bar["high"])
             low = float(bar["low"])
+
+            # --- H5–H7 path stats update ------------------------------------
+            # Favourable move from entry (from POV of 'side')
+            fav = side * (high - entry_price)
+            # Adverse move from entry (from POV of 'side')
+            adv = side * (low - entry_price)
+
+            if fav > best_fav:
+                best_fav = fav
+                time_to_mfe = j - i
+
+            if adv < worst_adv:
+                worst_adv = adv
+            # ---------------------------------------------------------------
 
             tp, sl, hit_tp, hit_sl = build_barriers(
                 side=side,
@@ -143,6 +179,19 @@ def _simulate_trades(
             exit_price=exit_price,
         )
 
+        # Normalize excursions to "R" units using entry ATR and side-specific SL
+        risk_per_unit = atr * (
+            cfg.risk.long.sl_mult if side == 1 else cfg.risk.short.sl_mult
+        )
+        if risk_per_unit > 0:
+            mfe_r = best_fav / risk_per_unit
+            mae_r = worst_adv / risk_per_unit
+        else:
+            mfe_r = np.nan
+            mae_r = np.nan
+
+        holding_period = exit_idx - entry_idx
+
         trades.append(
             dict(
                 symbol=cfg.symbol,
@@ -157,6 +206,13 @@ def _simulate_trades(
                 pnl=pnl,
                 atr=atr,
                 shockflip_z=float(row.get("shockflip_z", float("nan"))),
+                # H5–H7: post-path instrumentation
+                mfe_price=best_fav,
+                mae_price=worst_adv,
+                mfe_r=mfe_r,
+                mae_r=mae_r,
+                time_to_mfe_bars=time_to_mfe,
+                holding_period_bars=holding_period,
             )
         )
 

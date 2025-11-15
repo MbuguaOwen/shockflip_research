@@ -109,6 +109,10 @@ def main():
             setattr(bt_cfg, "_debug", bool(args.debug))
             if hasattr(bt_cfg, "shockflip"):
                 setattr(bt_cfg.shockflip, "_debug", bool(args.debug))
+            # H1 gate from config filters
+            h1 = (cfg.get("filters", {}) or {}).get("prior_flow_sign", {}) or {}
+            if bool(h1.get("enabled", False)):
+                setattr(bt_cfg, "_h1_prior_flow_required_sign", int(h1.get("required_sign", -1)))
         except Exception:
             pass
 
