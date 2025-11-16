@@ -16,10 +16,10 @@ risk:
   cooldown_bars: 10
   long:
     tp_mult: 37.5
-    sl_mult: 9.0
+    sl_mult: 10.0
   short:
-    tp_mult: 15.0
-    sl_mult: 6.5
+    tp_mult: 20.0
+    sl_mult: 10.5
 
   # Optional BE@1R management (H5/H6 inspired)
   mfe_breakeven:
@@ -55,12 +55,9 @@ filters:
     required_sign: -1
 
   price_flow_div:
-    enabled: true       # H2 gate is wired but OFF by default
-    # "Dead-zone" for price_flow_div: skip trades where
-    #   dead_zone_low < price_flow_div <= dead_zone_high
-
-    dead_zone_low: 0.32    # from bucket 3 left edge (~0.319)
-    dead_zone_high: 0.86   # from bucket 3 right edge (~0.857)
+    enabled: true
+    mode: extreme_only   # options: extreme_only, dead_zone
+    threshold: 1.05      # from bucket edge (~1.055)
 
 session:
   utc_blocks: [[0, 24]]

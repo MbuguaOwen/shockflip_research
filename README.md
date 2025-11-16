@@ -101,6 +101,37 @@ Parity replay writes a simple report to:
 
 - `results/parity/parity_report.json`
 
+## ShockFlip_BTC_v1.6 (v16)
+
+- BTC spec that halves SL distance and adds optional R-based trailing stops.
+- Entries are identical to v1.5 (ShockFlip core + H1 gate + H2 extreme-only); only risk management changes.
+- Config: `configs/strategies_shockflip_btc_v16.yaml`
+
+What changed vs v1.5
+- SL halved: long `sl_mult: 4.5` (was 9.0), short `sl_mult: 3.25` (was 6.5).
+- Trailing stop (config-driven; default OFF):
+  - Arms when best MFE ≥ `arm_threshold_r` (default 3.0R)
+  - Never gives back below `floor_r` (default 2.5R)
+  - Trails at a wide `gap_r` behind best MFE (default 1.0R)
+  - Coexists with BE: first move SL to entry at BE threshold if enabled; trailing then ratchets beyond entry.
+
+Quick runs (PowerShell one-liners)
+
+- Baseline v1.6: half SL, trailing OFF
+  - `python scripts/run_backtest.py --config configs/strategies_shockflip_btc_v16.yaml --out results/backtest/BTC_v16_halfSL_noTrail_trades.csv --debug`
+  - `python scripts/run_event_study.py --config configs/strategies_shockflip_btc_v16.yaml --events_out results/event_study/BTC_v16_halfSL_noTrail_events.csv --summary_out results/event_study/BTC_v16_halfSL_noTrail_summary.csv`
+  - `python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v16_halfSL_noTrail_trades.csv --events results/event_study/BTC_v16_halfSL_noTrail_events.csv --out_dir results/analysis/BTC_v16_halfSL_noTrail --print-columns`
+
+- Trailing ON (edit YAML: set `risk.trailing_stop.enabled: true`)
+  - `python scripts/run_backtest.py --config configs/strategies_shockflip_btc_v16.yaml --out results/backtest/BTC_v16_trail3R_trades.csv`
+  - `python scripts/run_event_study.py --config configs/strategies_shockflip_btc_v16.yaml --events_out results/event_study/BTC_v16_trail3R_events.csv --summary_out results/event_study/BTC_v16_trail3R_summary.csv`
+  - `python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v16_trail3R_trades.csv --events results/event_study/BTC_v16_trail3R_events.csv --out_dir results/analysis/BTC_v16_trail3R`
+
+Compare per run
+- `overall_summary.csv` in the analysis folder (PF, win_rate, maxDD).
+- `h5_mfe_mae_by_result.csv` for MFE/MAE quantiles (are winners extended, are BE trades healthier?).
+- `h5_zombie_stats.csv` (share of losers that once had large MFE; lower is better).
+
 ## Parameter Sweep (Micro-grid)
 
 Run a 27-point micro-grid around ShockFlip v1.0 to inspect event frequency, backtest stats, and event-study lifts:

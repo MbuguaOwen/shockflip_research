@@ -84,11 +84,19 @@ def build_backtest_config(cfg: dict) -> BacktestConfig:
             except Exception:
                 bt_cfg._h1_prior_flow_required_sign = -1
 
-        # H2 – optional divergence dead-zone
+        # H2 – optional divergence gate
         if h2_cfg.get("enabled", False):
+            mode = str(h2_cfg.get("mode", "dead_zone")).strip().lower()
             try:
-                bt_cfg._h2_div_dead_zone_low = float(h2_cfg.get("dead_zone_low"))
-                bt_cfg._h2_div_dead_zone_high = float(h2_cfg.get("dead_zone_high"))
+                if mode == "extreme_only":
+                    bt_cfg._h2_div_mode = "extreme_only"
+                    thr = float(h2_cfg.get("threshold"))
+                    bt_cfg._h2_div_extreme_threshold = thr
+                else:
+                    # default/backward-compat: dead_zone using |div|
+                    bt_cfg._h2_div_mode = "dead_zone"
+                    bt_cfg._h2_div_dead_zone_low = float(h2_cfg.get("dead_zone_low"))
+                    bt_cfg._h2_div_dead_zone_high = float(h2_cfg.get("dead_zone_high"))
             except Exception:
                 pass
 
@@ -98,6 +106,16 @@ def build_backtest_config(cfg: dict) -> BacktestConfig:
                 be_threshold_r = float(mfe_cfg.get("threshold_r", 1.0))
                 if be_threshold_r > 0:
                     bt_cfg._mfe_breakeven_r = be_threshold_r
+            except Exception:
+                pass
+        # Trailing stop parameters (optional)
+        trailing_cfg = risk_cfg.get("trailing_stop", {}) or {}
+        if trailing_cfg.get("enabled", False):
+            try:
+                bt_cfg._trailing_enabled = True
+                bt_cfg._trailing_arm_r = float(trailing_cfg.get("arm_threshold_r"))
+                bt_cfg._trailing_floor_r = float(trailing_cfg.get("floor_r"))
+                bt_cfg._trailing_gap_r = float(trailing_cfg.get("gap_r"))
             except Exception:
                 pass
     except Exception:
@@ -147,6 +165,14 @@ def main():
             h1 = (cfg.get("filters", {}) or {}).get("prior_flow_sign", {}) or {}
             if bool(h1.get("enabled", False)):
                 setattr(bt_cfg, "_h1_prior_flow_required_sign", int(h1.get("required_sign", -1)))
+            # H3 ATR percentile gate from config filters (optional)
+            atrf = (cfg.get("filters", {}) or {}).get("atr_percentile", {}) or {}
+            if bool(atrf.get("enabled", False)):
+                try:
+                    setattr(bt_cfg, "_h3_atr_pct_low", float(atrf.get("low", 0.0)))
+                    setattr(bt_cfg, "_h3_atr_pct_high", float(atrf.get("high", 1.0)))
+                except Exception:
+                    pass
         except Exception:
             pass
 

@@ -1,5 +1,4 @@
-# ShockFlip_BTC_v1.5 – BTC spec (H1 + H2 + BE@1R)
-# Locked config assembled from Phase C results
+# ShockFlip_BTC_v1.6 – BTC spec (H1 + H2 extreme-only + BE + trailing option)
 
 data:
   include: data.yaml
@@ -13,14 +12,22 @@ risk:
   cooldown_bars: 10
   long:
     tp_mult: 27.5
-    sl_mult: 9.0
+    sl_mult: 4.5      # was 9.0 → SL cut in half
   short:
     tp_mult: 15.0
-    sl_mult: 6.5
+    sl_mult: 3.25     # was 6.5 → SL cut in half
+
   # Management: move SL to breakeven after decent MFE
   mfe_breakeven:
     enabled: true
-    threshold_r: 1.4
+    threshold_r: 1.0  # try 1.0 / 1.2 / 1.4 via small grid
+
+  # New: configurable trailing stop in R-space (default OFF)
+  trailing_stop:
+    enabled: false          # default OFF so we can test cleanly
+    arm_threshold_r: 3.0    # arm trailing once best MFE ≥ 3R
+    floor_r: 2.5            # never give back below 2.5R once armed
+    gap_r: 1.0              # trail ~1R behind best MFE
 
 shock_flip:
   source: "imbalance"
@@ -43,19 +50,18 @@ filters:
     enabled: true
     required_sign: -1
 
-  # H2: Price/flow divergence gating
-  # Promote extreme-only: trade only when |div| is large
+  # H2: Price/flow divergence – extreme-only lane
   price_flow_div:
     enabled: true
-    mode: extreme_only   # options: extreme_only, dead_zone
-    threshold: 1.4      # from bucket edge (~1.055)
+    mode: extreme_only
+    threshold: 1.05
 
-  # Defined but disabled research filters
+  # Optional ATR regime filter (disabled by default)
   atr_percentile:
     enabled: false
     window: 5000
-    low: 0.30
-    high: 0.80
+    low: 0.80
+    high: 1.00
   macro_regime:
     enabled: false
 
@@ -67,3 +73,4 @@ event_study:
     long:  [12, 18, 60]
     short: [6, 12]
   baseline_n_random: 2000
+

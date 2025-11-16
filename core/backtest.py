@@ -81,22 +81,59 @@ def _simulate_trades(
             except Exception:
                 continue
 
-        # H2 entry filter: price/flow divergence dead-zone
-        # Skip trades where price_flow_div is inside a configured "neutral" band.
-        h2_low = getattr(cfg, "_h2_div_dead_zone_low", None)
-        h2_high = getattr(cfg, "_h2_div_dead_zone_high", None)
-        if h2_low is not None and h2_high is not None:
-            div = row.get("price_flow_div")
+        # H2 entry filter: price/flow divergence gate.
+        # Modes:
+        #   - extreme_only: require |price_flow_div| >= threshold
+        #   - dead_zone (default/back-compat): skip when low < |div| <= high
+        h2_mode = getattr(cfg, "_h2_div_mode", None)
+        div = row.get("price_flow_div")
+        if h2_mode is not None:
             try:
                 if pd.isna(div):
-                    # treat missing divergence as "no trade" when H2 is active
                     continue
-                div_val = float(div)
-                # Dead-zone convention: skip when low < div <= high
-                if h2_low < div_val <= h2_high:
+                div_abs = abs(float(div))
+            except Exception:
+                # If value is weird, be conservative and skip
+                continue
+
+            if h2_mode == "extreme_only":
+                thr = getattr(cfg, "_h2_div_extreme_threshold", None)
+                try:
+                    if thr is None:
+                        # No threshold -> treat as no gate
+                        pass
+                    else:
+                        thr = float(thr)
+                        if div_abs < thr:
+                            continue
+                except Exception:
+                    continue
+            else:
+                h2_low = getattr(cfg, "_h2_div_dead_zone_low", None)
+                h2_high = getattr(cfg, "_h2_div_dead_zone_high", None)
+                if h2_low is not None and h2_high is not None:
+                    try:
+                        low = float(h2_low)
+                        high = float(h2_high)
+                        # Dead-zone on |div|: skip when low < |div| <= high
+                        if low < div_abs <= high:
+                            continue
+                    except Exception:
+                        continue
+
+        # H3 entry filter: ATR percentile gate (keep trades in certain vol regimes)
+        atr_low = getattr(cfg, "_h3_atr_pct_low", None)
+        atr_high = getattr(cfg, "_h3_atr_pct_high", None)
+        if atr_low is not None and atr_high is not None:
+            atr_pct = row.get("atr_pct")
+            try:
+                if pd.isna(atr_pct):
+                    continue
+                ap = float(atr_pct)
+                # Require atr_pct within [low, high]
+                if not (float(atr_low) <= ap <= float(atr_high)):
                     continue
             except Exception:
-                # If anything is weird with the value, be conservative and skip.
                 continue
 
         atr = float(row.get("atr", float("nan")))
@@ -121,13 +158,21 @@ def _simulate_trades(
         # Build TP/SL once based on entry ATR
         # We'll use per-bar high/low to check hits.
 
-        # Optional BE@1R management: move SL to entry once MFE >= R.
+        # Precompute 1R in price units based on entry ATR and side-specific SL
+        sl_mult = cfg.risk.long.sl_mult if side == 1 else cfg.risk.short.sl_mult
+        risk_per_unit = atr * sl_mult if np.isfinite(atr) and atr > 0 else float("nan")
+
+        # Optional BE@R management: move SL to entry once MFE >= threshold R.
         be_threshold_r = getattr(cfg, "_mfe_breakeven_r", None)
         be_active = False
-        risk_per_unit = None
-        if be_threshold_r is not None and be_threshold_r > 0 and np.isfinite(atr) and atr > 0:
-            sl_mult = cfg.risk.long.sl_mult if side == 1 else cfg.risk.short.sl_mult
-            risk_per_unit = atr * sl_mult
+
+        # Optional trailing stop config (R-space)
+        trailing_enabled = bool(getattr(cfg, "_trailing_enabled", False))
+        trailing_arm_r = getattr(cfg, "_trailing_arm_r", None)
+        trailing_floor_r = getattr(cfg, "_trailing_floor_r", None)
+        trailing_gap_r = getattr(cfg, "_trailing_gap_r", None)
+        trailing_armed = False
+        trail_sl_price = None  # ratcheting trailing SL level in price units
         for j in range(i + 1, len(df)):
             bar = df.iloc[j]
             high = float(bar["high"])
@@ -147,15 +192,36 @@ def _simulate_trades(
                 worst_adv = adv
             # ---------------------------------------------------------------
 
-            # BE@1R: once best_fav exceeds threshold * risk, activate BE
+            # BE: once best_fav exceeds threshold * 1R, activate BE
             if (
                 not be_active
                 and be_threshold_r is not None
-                and risk_per_unit is not None
+                and np.isfinite(risk_per_unit)
                 and risk_per_unit > 0
             ):
                 if best_fav >= be_threshold_r * risk_per_unit:
                     be_active = True
+
+            # Trailing stop: arm when best MFE in R meets threshold
+            if trailing_enabled and trailing_arm_r is not None and np.isfinite(risk_per_unit) and risk_per_unit > 0:
+                # Compute best MFE in R units
+                best_mfe_r = best_fav / risk_per_unit
+                try:
+                    if not trailing_armed and best_mfe_r >= float(trailing_arm_r):
+                        trailing_armed = True
+                    if trailing_armed:
+                        floor_r = float(trailing_floor_r) if trailing_floor_r is not None else 0.0
+                        gap_r = float(trailing_gap_r) if trailing_gap_r is not None else 0.0
+                        target_r = max(floor_r, best_mfe_r - gap_r)
+                        if side == 1:
+                            candidate = entry_price + target_r * risk_per_unit
+                            trail_sl_price = max(trail_sl_price, candidate) if trail_sl_price is not None else candidate
+                        else:
+                            candidate = entry_price - target_r * risk_per_unit
+                            trail_sl_price = min(trail_sl_price, candidate) if trail_sl_price is not None else candidate
+                except Exception:
+                    # Be conservative if anything goes wrong
+                    pass
 
             tp, sl, hit_tp, hit_sl = build_barriers(
                 side=side,
@@ -169,27 +235,34 @@ def _simulate_trades(
             if tp is None or sl is None:
                 continue
 
-            # Effective SL level and hit flag – possibly moved to BE
+            # Effective SL level (may be moved to BE and/or advanced by trailing)
             sl_eff = sl
-            hit_sl_eff = hit_sl
-
             if be_active:
                 if side == 1:
-                    # Long: adverse direction is DOWN, so max(sl, entry) moves SL up to entry
-                    sl_eff = max(sl, entry_price)
-                    hit_sl_eff = low <= sl_eff
+                    sl_eff = max(sl_eff, entry_price)
                 else:
-                    # Short: adverse direction is UP, so min(sl, entry) moves SL down to entry
-                    sl_eff = min(sl, entry_price)
-                    hit_sl_eff = high >= sl_eff
+                    sl_eff = min(sl_eff, entry_price)
+            if trailing_armed and trail_sl_price is not None:
+                if side == 1:
+                    sl_eff = max(sl_eff, trail_sl_price)
+                else:
+                    sl_eff = min(sl_eff, trail_sl_price)
+
+            # Recompute SL hit flag with effective SL
+            hit_sl_eff = (low <= sl_eff) if side == 1 else (high >= sl_eff)
 
             if hit_tp and hit_sl_eff:
-                # Deterministic tie-break: worse outcome wins.
-                # If BE is active and SL is effectively at entry, label as BE.
-                if be_active and np.isfinite(entry_price) and np.isclose(sl_eff, entry_price, rtol=0.0, atol=1e-8):
+                # Tie-break: decide based on effective SL relative to entry.
+                # - If at entry: BE
+                # - If on profitable side: treat as TP (trailing or better-than-entry stop)
+                # - Else: SL
+                if np.isfinite(entry_price) and np.isclose(sl_eff, entry_price, rtol=0.0, atol=1e-8):
                     result = "BE"
                 else:
-                    result = "SL"
+                    if side == 1:
+                        result = "TP" if sl_eff >= entry_price else "SL"
+                    else:
+                        result = "TP" if sl_eff <= entry_price else "SL"
                 exit_price = sl_eff
                 exit_ts = bar["timestamp"]
                 exit_idx = j
@@ -201,11 +274,14 @@ def _simulate_trades(
                 exit_idx = j
                 break
             elif hit_sl_eff:
-                # If BE is active and SL is effectively at entry, label as BE.
-                if be_active and np.isfinite(entry_price) and np.isclose(sl_eff, entry_price, rtol=0.0, atol=1e-8):
+                # Label based on effective SL relative to entry.
+                if np.isfinite(entry_price) and np.isclose(sl_eff, entry_price, rtol=0.0, atol=1e-8):
                     result = "BE"
                 else:
-                    result = "SL"
+                    if side == 1:
+                        result = "TP" if sl_eff >= entry_price else "SL"
+                    else:
+                        result = "TP" if sl_eff <= entry_price else "SL"
                 exit_price = sl_eff
                 exit_ts = bar["timestamp"]
                 exit_idx = j
