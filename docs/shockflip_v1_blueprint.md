@@ -192,6 +192,10 @@ Minimal Run Commands (copy/paste)
   - `python scripts/run_backtest.py --config configs/strategies_shockflip_only.yaml --out results/backtest/BTC_v13_trades.csv --debug`
 - Analyze H1–H7 filters on those trades (requires events CSV to exist):
   - `python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v13_trades.csv --events results/event_study/BTC_v13_events.csv --out_dir results/analysis/BTC_v13`
+
+  - OR:
+  python scripts/run_event_study.py --config configs/strategies_shockflip_only.yaml --events_out results/event_study/BTC_v14_h1_events.csv --summary_out results/event_study/BTC_v14_h1_summ
+  
   - If you haven’t generated events yet, run:
     - `python scripts/run_event_study.py --config configs/strategies_shockflip_only.yaml --events_out results/event_study/BTC_v13_events.csv --summary_out results/event_study/BTC_v13_summary.csv`
 
@@ -200,3 +204,98 @@ Promotion Rules
 - Require measurable improvement (PF/DD) on IS and OOS.
 - Keep parity sacred; validate research vs live‑style paths.
 - After BTC stabilizes, attempt cross‑symbol validation (e.g., ETH).
+
+Phased Evaluation Plan (with commands)
+--------------------------------------
+
+Pre‑Req
+- Set combined 7‑month data in `configs/data.yaml`: `tick_dir: data/ticks/BTCUSDT`.
+- Keep H1 live (filters.prior_flow_sign.enabled: true, required_sign: -1).
+
+Phase A — H1 + BE@1R (no H2)
+- YAML toggles (in `configs/strategies_shockflip_only.yaml`):
+```
+filters:
+  prior_flow_sign:
+    enabled: true
+    required_sign: -1
+  price_flow_div:
+    enabled: false
+
+risk:
+  mfe_breakeven:
+    enabled: true
+    threshold_r: 1.0
+```
+- Commands (PowerShell one‑liners):
+```
+python scripts/run_backtest.py --config configs/strategies_shockflip_only.yaml --out results/backtest/BTC_v14_h1_be1r_trades.csv --debug
+python scripts/run_event_study.py --config configs/strategies_shockflip_only.yaml --events_out results/event_study/BTC_v14_h1_be1r_events.csv --summary_out results/event_study/BTC_v14_h1_be1r_summary.csv
+python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v14_h1_be1r_trades.csv --events results/event_study/BTC_v14_h1_be1r_events.csv --out_dir results/analysis/BTC_v14_h1_be1r --print-columns
+```
+- Expect: BE exits labeled as `result="BE"`; check PF, max drawdown, and zombie stats in the analysis output.
+
+Phase B — H1 + H2 (BE off)
+- YAML toggles:
+```
+filters:
+  prior_flow_sign:
+    enabled: true
+    required_sign: -1
+  price_flow_div:
+    enabled: true
+    dead_zone_low: -0.07     # tune from H2 buckets
+    dead_zone_high: 0.26
+
+risk:
+  mfe_breakeven:
+    enabled: false
+```
+- Commands:
+```
+python scripts/run_backtest.py --config configs/strategies_shockflip_only.yaml --out results/backtest/BTC_v15_h1_h2_trades.csv --debug
+python scripts/run_event_study.py --config configs/strategies_shockflip_only.yaml --events_out results/event_study/BTC_v15_h1_h2_events.csv --summary_out results/event_study/BTC_v15_h1_h2_summary.csv
+python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v15_h1_h2_trades.csv --events results/event_study/BTC_v15_h1_h2_events.csv --out_dir results/analysis/BTC_v15_h1_h2 --print-columns
+```
+- Compare to Phase A baseline: n, PF, max drawdown. If H2 improves PF/DD and holds IS/OOS, consider promotion.
+
+Phase C — H1 + H2 + BE@1R
+- YAML toggles:
+```
+filters:
+  prior_flow_sign:
+    enabled: true
+    required_sign: -1
+  price_flow_div:
+    enabled: true
+    dead_zone_low: -0.07
+    dead_zone_high: 0.26
+
+risk:
+  mfe_breakeven:
+    enabled: true
+    threshold_r: 1.0
+```
+- Commands:
+```
+python scripts/run_backtest.py --config configs/strategies_shockflip_only.yaml --out results/backtest/BTC_v16_h1_h2_be1r_trades.csv --debug
+python scripts/run_event_study.py --config configs/strategies_shockflip_only.yaml --events_out results/event_study/BTC_v16_h1_h2_be1r_events.csv --summary_out results/event_study/BTC_v16_h1_h2_be1r_summary.csv
+python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v16_h1_h2_be1r_trades.csv --events results/event_study/BTC_v16_h1_h2_be1r_events.csv --out_dir results/analysis/BTC_v16_h1_h2_be1r --print-columns
+```
+- Confirm combined effect; re‑check PF, max drawdown, and BE/SL breakdown.
+
+ShockFlip_BTC_v1.5 (Locked Spec)
+---------------------------------
+
+- Definition: H1 + H2 + BE@1R on top of the v1.3 detection core.
+- Config file: `configs/strategies_shockflip_btc_v15.yaml`
+- Rationale:
+  - H1 improves PF by removing misaligned prior‑flow entries.
+  - H2 removes the divergence dead‑zone; pushes the book toward extreme |div| tails.
+  - BE@1R protects downside once a trade proves itself; reduces drawdown without harming PF.
+- Example commands:
+```
+python scripts/run_backtest.py --config configs/strategies_shockflip_btc_v15.yaml --out results/backtest/BTC_v15_h1_h2_be1r_trades.csv --debug
+python scripts/run_event_study.py --config configs/strategies_shockflip_btc_v15.yaml --events_out results/event_study/BTC_v15_h1_h2_be1r_events.csv --summary_out results/event_study/BTC_v15_h1_h2_be1r_summary.csv
+python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v15_h1_h2_be1r_trades.csv --events results/event_study/BTC_v15_h1_h2_be1r_events.csv --out_dir results/analysis/BTC_v15_h1_h2_be1r --print-columns
+```

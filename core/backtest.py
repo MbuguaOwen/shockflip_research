@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+﻿from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -81,6 +81,24 @@ def _simulate_trades(
             except Exception:
                 continue
 
+        # H2 entry filter: price/flow divergence dead-zone
+        # Skip trades where price_flow_div is inside a configured "neutral" band.
+        h2_low = getattr(cfg, "_h2_div_dead_zone_low", None)
+        h2_high = getattr(cfg, "_h2_div_dead_zone_high", None)
+        if h2_low is not None and h2_high is not None:
+            div = row.get("price_flow_div")
+            try:
+                if pd.isna(div):
+                    # treat missing divergence as "no trade" when H2 is active
+                    continue
+                div_val = float(div)
+                # Dead-zone convention: skip when low < div <= high
+                if h2_low < div_val <= h2_high:
+                    continue
+            except Exception:
+                # If anything is weird with the value, be conservative and skip.
+                continue
+
         atr = float(row.get("atr", float("nan")))
         if not np.isfinite(atr) or atr <= 0:
             continue
@@ -89,7 +107,7 @@ def _simulate_trades(
         entry_ts = row["timestamp"]
         entry_price = float(row["close"])
 
-        # H5–H7: track path statistics for this trade
+        # H5â€“H7: track path statistics for this trade
         best_fav = 0.0   # max favourable excursion (price units, >= 0)
         worst_adv = 0.0  # most adverse excursion (price units, <= 0)
         time_to_mfe = 0  # bars from entry until best_fav
@@ -102,12 +120,20 @@ def _simulate_trades(
 
         # Build TP/SL once based on entry ATR
         # We'll use per-bar high/low to check hits.
+
+        # Optional BE@1R management: move SL to entry once MFE >= R.
+        be_threshold_r = getattr(cfg, "_mfe_breakeven_r", None)
+        be_active = False
+        risk_per_unit = None
+        if be_threshold_r is not None and be_threshold_r > 0 and np.isfinite(atr) and atr > 0:
+            sl_mult = cfg.risk.long.sl_mult if side == 1 else cfg.risk.short.sl_mult
+            risk_per_unit = atr * sl_mult
         for j in range(i + 1, len(df)):
             bar = df.iloc[j]
             high = float(bar["high"])
             low = float(bar["low"])
 
-            # --- H5–H7 path stats update ------------------------------------
+            # --- H5â€“H7 path stats update ------------------------------------
             # Favourable move from entry (from POV of 'side')
             fav = side * (high - entry_price)
             # Adverse move from entry (from POV of 'side')
@@ -121,6 +147,16 @@ def _simulate_trades(
                 worst_adv = adv
             # ---------------------------------------------------------------
 
+            # BE@1R: once best_fav exceeds threshold * risk, activate BE
+            if (
+                not be_active
+                and be_threshold_r is not None
+                and risk_per_unit is not None
+                and risk_per_unit > 0
+            ):
+                if best_fav >= be_threshold_r * risk_per_unit:
+                    be_active = True
+
             tp, sl, hit_tp, hit_sl = build_barriers(
                 side=side,
                 entry=entry_price,
@@ -133,10 +169,28 @@ def _simulate_trades(
             if tp is None or sl is None:
                 continue
 
-            if hit_tp and hit_sl:
-                # Deterministic tie-break: SL wins (worst-case)
-                result = "SL"
-                exit_price = sl
+            # Effective SL level and hit flag – possibly moved to BE
+            sl_eff = sl
+            hit_sl_eff = hit_sl
+
+            if be_active:
+                if side == 1:
+                    # Long: adverse direction is DOWN, so max(sl, entry) moves SL up to entry
+                    sl_eff = max(sl, entry_price)
+                    hit_sl_eff = low <= sl_eff
+                else:
+                    # Short: adverse direction is UP, so min(sl, entry) moves SL down to entry
+                    sl_eff = min(sl, entry_price)
+                    hit_sl_eff = high >= sl_eff
+
+            if hit_tp and hit_sl_eff:
+                # Deterministic tie-break: worse outcome wins.
+                # If BE is active and SL is effectively at entry, label as BE.
+                if be_active and np.isfinite(entry_price) and np.isclose(sl_eff, entry_price, rtol=0.0, atol=1e-8):
+                    result = "BE"
+                else:
+                    result = "SL"
+                exit_price = sl_eff
                 exit_ts = bar["timestamp"]
                 exit_idx = j
                 break
@@ -146,9 +200,13 @@ def _simulate_trades(
                 exit_ts = bar["timestamp"]
                 exit_idx = j
                 break
-            elif hit_sl:
-                result = "SL"
-                exit_price = sl
+            elif hit_sl_eff:
+                # If BE is active and SL is effectively at entry, label as BE.
+                if be_active and np.isfinite(entry_price) and np.isclose(sl_eff, entry_price, rtol=0.0, atol=1e-8):
+                    result = "BE"
+                else:
+                    result = "SL"
+                exit_price = sl_eff
                 exit_ts = bar["timestamp"]
                 exit_idx = j
                 break
@@ -206,7 +264,8 @@ def _simulate_trades(
                 pnl=pnl,
                 atr=atr,
                 shockflip_z=float(row.get("shockflip_z", float("nan"))),
-                # H5–H7: post-path instrumentation
+                prior_flow_sign=(int(row.get("prior_flow_sign")) if (row.get("prior_flow_sign") is not None and not pd.isna(row.get("prior_flow_sign"))) else np.nan),
+                # H5â€“H7: post-path instrumentation
                 mfe_price=best_fav,
                 mae_price=worst_adv,
                 mfe_r=mfe_r,
@@ -278,3 +337,6 @@ def run_backtest_from_bars(
     trades = _simulate_trades(feats, cfg, progress=progress)
     stats = summarize_trades(trades)
     return trades, stats
+
+
+

@@ -22,6 +22,21 @@ def compute_pf(df: pd.DataFrame) -> float:
     return float(gross_pos / gross_neg)
 
 
+def compute_max_drawdown(pnl: pd.Series) -> float:
+    """Compute max drawdown from a series of fractional returns.
+
+    Uses multiplicative equity curve: equity_t = prod(1 + pnl_i).
+    Returns the minimum drawdown (negative number).
+    """
+    r = pd.to_numeric(pnl, errors="coerce").fillna(0.0)
+    equity = (1.0 + r).cumprod()
+    if equity.empty:
+        return float("nan")
+    peak = equity.cummax()
+    dd = equity / peak - 1.0
+    return float(dd.min())
+
+
 def safe_win_rate(df: pd.DataFrame) -> float:
     if df.empty or "pnl" not in df.columns:
         return np.nan
@@ -167,6 +182,69 @@ def analyze_zombies(trades: pd.DataFrame, thresholds=(0.5, 1.0)) -> pd.DataFrame
         out_rows.append(row)
 
     return pd.DataFrame(out_rows)
+
+
+# ---------------------------------------------------------------------------
+# MFE/MAE quantiles by result
+# ---------------------------------------------------------------------------
+
+def summarize_mfe_mae_by_result(df: pd.DataFrame) -> pd.DataFrame:
+    """Summarize MFE/MAE distributions by trade result.
+
+    Computes key quantiles for `mfe_r` and `mae_r` grouped by `result`, along
+    with PF and win rate per bucket. Prints and returns the summary DataFrame.
+    """
+    if "result" not in df.columns:
+        tmp = df.copy()
+        tmp["result"] = np.where(
+            pd.to_numeric(tmp.get("pnl", 0), errors="coerce").fillna(0.0) > 0,
+            "WIN",
+            "LOSS",
+        )
+        df = tmp
+
+    if "mfe_r" not in df.columns or "mae_r" not in df.columns:
+        print("[Warn] Expected 'mfe_r' and 'mae_r' in data; MFE/MAE summary will be skipped.")
+        return pd.DataFrame()
+
+    rows = []
+    for res, g in df.groupby("result"):
+        if g.empty:
+            continue
+
+        def q(series: pd.Series, qs):
+            s = pd.to_numeric(series, errors="coerce")
+            return s.quantile(qs).values.tolist()
+
+        mfe_q = q(g["mfe_r"], [0.25, 0.5, 0.75, 0.9, 0.99])
+        mae_q = q(g["mae_r"], [0.25, 0.5, 0.75, 0.9, 0.99])
+
+        rows.append(
+            {
+                "result": res,
+                "n_trades": len(g),
+                "pf": compute_pf(g),
+                "win_rate": safe_win_rate(g),
+                "mfe_r_q25": mfe_q[0],
+                "mfe_r_median": mfe_q[1],
+                "mfe_r_q75": mfe_q[2],
+                "mfe_r_q90": mfe_q[3],
+                "mfe_r_q99": mfe_q[4],
+                "mae_r_q25": mae_q[0],
+                "mae_r_median": mae_q[1],
+                "mae_r_q75": mae_q[2],
+                "mae_r_q90": mae_q[3],
+                "mae_r_q99": mae_q[4],
+            }
+        )
+
+    out = pd.DataFrame(rows)
+    print("\n[MFE/MAE] Summary by result:")
+    if not out.empty:
+        print(out)
+    else:
+        print("<empty>")
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -347,8 +425,29 @@ def main():
         print(list(merged.columns))
 
     print(f"[Info] n_trades = {len(merged)}")
-    print(f"[Info] overall PF = {compute_pf(merged):.3f}")
-    print(f"[Info] overall win_rate = {safe_win_rate(merged):.3f}")
+    overall_pf = compute_pf(merged)
+    overall_wr = safe_win_rate(merged)
+    # Prefer ordering by exit_idx/exit_ts if present to build equity
+    pnl_series = merged
+    if "exit_idx" in merged.columns:
+        pnl_series = merged.sort_values("exit_idx")
+    elif "exit_ts" in merged.columns:
+        pnl_series = merged.sort_values("exit_ts")
+    mdd = compute_max_drawdown(pnl_series.get("pnl", pd.Series(dtype=float)))
+    print(f"[Info] overall PF = {overall_pf:.3f}")
+    print(f"[Info] overall win_rate = {overall_wr:.3f}")
+    print(f"[Info] max_drawdown = {mdd:.3%}")
+
+    # Save a tiny summary for quick compares
+    summary_path = out_dir / "overall_summary.csv"
+    pd.DataFrame([
+        {
+            "n_trades": int(len(merged)),
+            "pf": overall_pf,
+            "win_rate": overall_wr,
+            "max_drawdown": mdd,
+        }
+    ]).to_csv(summary_path, index=False)
 
     # H5–H7: path stats
     path_stats = analyze_path_stats(merged)
@@ -360,6 +459,11 @@ def main():
     zombies.to_csv(out_dir / "h5_zombie_stats.csv", index=False)
     print("\n[H5] Zombie stats (losers with big MFE):")
     print(zombies)
+
+    # Explicit MFE/MAE quantiles by result
+    mfe_mae_summary = summarize_mfe_mae_by_result(merged)
+    if not mfe_mae_summary.empty:
+        mfe_mae_summary.to_csv(out_dir / "h5_mfe_mae_by_result.csv", index=False)
 
     # H1: prior flow sign
     if "prior_flow_sign" in merged.columns:

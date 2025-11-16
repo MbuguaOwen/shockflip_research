@@ -1,0 +1,69 @@
+# ShockFlip_BTC_v1.5 – BTC spec (H1 + H2 + BE@1R)
+# Locked config assembled from Phase C results
+
+data:
+  include: data.yaml
+
+slippage_bp: 0.5
+fees:
+  taker_bp: 1.0
+
+risk:
+  atr_window: 60
+  cooldown_bars: 10
+  long:
+    tp_mult: 27.5
+    sl_mult: 9.0
+  short:
+    tp_mult: 15.0
+    sl_mult: 6.5
+  # Management: move SL to breakeven after decent MFE
+  mfe_breakeven:
+    enabled: true
+    threshold_r: 1.0
+
+shock_flip:
+  source: "imbalance"
+  z_window: 240
+  # Detection core from v1.3
+  z_band: 2.0
+  jump_band: 2.0
+  persistence_bars: 3
+  persistence_ratio: 0.60
+  dynamic_thresholds:
+    enabled: false
+    percentile: 0.99
+  location_filter:
+    donchian_window: 120
+    require_extreme: true
+
+filters:
+  # H1: Prior flow sign gate
+  prior_flow_sign:
+    enabled: true
+    required_sign: -1
+
+  # H2: Price/flow divergence dead-zone (skip the mushy middle)
+  price_flow_div:
+    enabled: true
+    dead_zone_low: 0.32
+    dead_zone_high: 0.86
+
+  # Defined but disabled research filters
+  atr_percentile:
+    enabled: false
+    window: 5000
+    low: 0.30
+    high: 0.80
+  macro_regime:
+    enabled: false
+
+session:
+  utc_blocks: [[0, 24]]
+
+event_study:
+  horizons:
+    long:  [12, 18, 60]
+    short: [6, 12]
+  baseline_n_random: 2000
+

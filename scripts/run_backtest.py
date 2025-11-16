@@ -70,6 +70,39 @@ def build_backtest_config(cfg: dict) -> BacktestConfig:
         risk=risk,
         shockflip=shockflip,
     )
+
+    # Attach internal research knobs (H1/H2/BE) as optional attrs
+    try:
+        filters_cfg = cfg.get("filters", {}) or {}
+        h1_cfg = filters_cfg.get("prior_flow_sign", {}) or {}
+        h2_cfg = filters_cfg.get("price_flow_div", {}) or {}
+
+        # H1 – already used today (keep behaviour)
+        if h1_cfg.get("enabled", False):
+            try:
+                bt_cfg._h1_prior_flow_required_sign = int(h1_cfg.get("required_sign", -1))
+            except Exception:
+                bt_cfg._h1_prior_flow_required_sign = -1
+
+        # H2 – optional divergence dead-zone
+        if h2_cfg.get("enabled", False):
+            try:
+                bt_cfg._h2_div_dead_zone_low = float(h2_cfg.get("dead_zone_low"))
+                bt_cfg._h2_div_dead_zone_high = float(h2_cfg.get("dead_zone_high"))
+            except Exception:
+                pass
+
+        mfe_cfg = risk_cfg.get("mfe_breakeven", {}) or {}
+        if mfe_cfg.get("enabled", False):
+            try:
+                be_threshold_r = float(mfe_cfg.get("threshold_r", 1.0))
+                if be_threshold_r > 0:
+                    bt_cfg._mfe_breakeven_r = be_threshold_r
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return bt_cfg
 
 

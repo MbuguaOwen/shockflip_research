@@ -79,6 +79,15 @@ To print lightweight diagnostics during development, add `--debug` to the runner
 - Includes best‑practice guidance (schema verification, defensive analysis, one‑promotion‑per‑iteration), and ready‑to‑run commands.
 - A blueprint config for v1.4 lives at `configs/strategies_shockflip_v1_4_blueprint.yaml` (H1 promoted; H2/BE listed as candidates).
 
+## ShockFlip_BTC_v1.5
+
+- Locked BTC spec combining H1 + H2 + BE@1R.
+- Config: `configs/strategies_shockflip_btc_v15.yaml`
+- Quick run commands (PowerShell one‑liners):
+  - `python scripts/run_backtest.py --config configs/strategies_shockflip_btc_v15.yaml --out results/backtest/BTC_v15_h1_h2_be1r_trades.csv --debug`
+  - `python scripts/run_event_study.py --config configs/strategies_shockflip_btc_v15.yaml --events_out results/event_study/BTC_v15_h1_h2_be1r_events.csv --summary_out results/event_study/BTC_v15_h1_h2_be1r_summary.csv`
+  - `python scripts/analyze_v13_filters.py --trades results/backtest/BTC_v15_h1_h2_be1r_trades.csv --events results/event_study/BTC_v15_h1_h2_be1r_events.csv --out_dir results/analysis/BTC_v15_h1_h2_be1r --print-columns`
+
 Backtest trades are written to:
 
 - `results/backtest/trades.csv`
