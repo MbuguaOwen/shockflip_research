@@ -48,6 +48,7 @@ def build_backtest_config(cfg: dict) -> BacktestConfig:
     )
 
     sf_cfg = cfg.get("shock_flip", {}) or {}
+    loc_cfg = sf_cfg.get("location_filter", {}) or {}
     shockflip = ShockFlipConfig(
         source=str(sf_cfg.get("source", "imbalance")),
         z_window=int(sf_cfg.get("z_window", 240)),
@@ -55,10 +56,11 @@ def build_backtest_config(cfg: dict) -> BacktestConfig:
         jump_band=float(sf_cfg.get("jump_band", 3.0)),
         persistence_bars=int(sf_cfg.get("persistence_bars", 6)),
         persistence_ratio=float(sf_cfg.get("persistence_ratio", 0.60)),
-        dynamic_enabled=bool(sf_cfg.get("dynamic_thresholds", {}).get("enabled", True)),
-        dynamic_percentile=float(sf_cfg.get("dynamic_thresholds", {}).get("percentile", 0.99)),
-        donchian_window=int(sf_cfg.get("location_filter", {}).get("donchian_window", 120)),
-        require_extreme=bool(sf_cfg.get("location_filter", {}).get("require_extreme", True)),
+        dynamic_thresholds=sf_cfg.get("dynamic_thresholds", {"enabled": True, "percentile": 0.99}),
+        location_filter={
+            "donchian_window": int(loc_cfg.get("donchian_window", 120)),
+            "require_extreme": bool(loc_cfg.get("require_extreme", True)),
+        },
     )
 
     bt_cfg = BacktestConfig(

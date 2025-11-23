@@ -1,215 +1,153 @@
-import argparse
+#!/usr/bin/env python3
+"""
+ShockFlip Backtest Runner (Stream-Safe & Robust)
+- Loads ticks via streaming (memory safe)
+- Resamples to 1-min bars
+- Runs Backtest with Diamond Filters AND Management
+- Auto-detects FeesConfig structure
+"""
 import os
 import sys
-import traceback
-
-# Ensure repository root is on sys.path when running as a script
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-
+import argparse
 import pandas as pd
 
+# Add project root to path
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(ROOT)
+
 from core.config import load_config
-from core.data_loader import load_marketdata_as_bars
-from core.backtest import BacktestConfig, run_backtest_from_bars
+from core.data_loader import stream_ticks_from_dir, resample_ticks_to_bars
+from core.backtest import run_backtest_from_bars, BacktestConfig, FiltersConfig
 from core.barriers import FeesConfig, RiskConfig, RiskSideConfig
 from core.shockflip_detector import ShockFlipConfig
 
+def load_full_history_as_bars(tick_dir, timeframe='1min'):
+    print(f"[Loader] Streaming ticks from {tick_dir}...")
+    all_bars = []
+    
+    for tick_chunk in stream_ticks_from_dir(tick_dir, chunk_days=20):
+        if tick_chunk.empty: continue
+        chunk_bars = resample_ticks_to_bars(tick_chunk, timeframe=timeframe)
+        all_bars.append(chunk_bars)
+        sys.stdout.write(".")
+        sys.stdout.flush()
+    
+    print("\n[Loader] Combining history...")
+    full_df = pd.concat(all_bars).sort_values("timestamp").drop_duplicates(subset="timestamp").reset_index(drop=True)
+    return full_df
 
-def build_backtest_config(cfg: dict) -> BacktestConfig:
-    data_cfg = cfg["data"]
-    symbol = data_cfg.get("symbol", "BTCUSDT")
-    tick_dir = data_cfg.get("tick_dir", "data/ticks/BTCUSDT")
-    timeframe = data_cfg.get("timeframe", "1min")
+def build_config(yaml_path):
+    raw = load_config(yaml_path)
 
-    fees_cfg = cfg.get("fees", {}) or {}
-    fees = FeesConfig(taker_bp=float(fees_cfg.get("taker_bp", 1.0)))
+    # 1. Data section (symbol / tick_dir / timeframe)
+    data_cfg = raw.get('data', {}) or {}
+    symbol = data_cfg.get('symbol', 'BTCUSDT')
+    tick_dir = data_cfg.get('tick_dir', 'data/ticks/BTCUSDT')
+    timeframe = data_cfg.get('timeframe', '1min')
 
-    slippage_bp = float(cfg.get("slippage_bp", 0.5))
+    # 2. Fees
+    fees_cfg = raw.get('fees', {}) or {}
+    fees = FeesConfig(taker_bp=float(fees_cfg.get('taker_bp', 1.0)))
 
-    risk_cfg = cfg.get("risk", {}) or {}
-    atr_window = int(risk_cfg.get("atr_window", 60))
-    cooldown_bars = int(risk_cfg.get("cooldown_bars", 10))
-    long_cfg = risk_cfg.get("long", {}) or {}
-    short_cfg = risk_cfg.get("short", {}) or {}
+    # 3. Slippage
+    slippage_bp = float(raw.get('slippage_bp', 0.5))
 
+    # 4. Risk
+    r = raw.get('risk', {}) or {}
+    long_cfg = r.get('long', {}) or {}
+    short_cfg = r.get('short', {}) or {}
     risk = RiskConfig(
-        atr_window=atr_window,
-        cooldown_bars=cooldown_bars,
+        atr_window=int(r.get('atr_window', 60)),
+        cooldown_bars=int(r.get('cooldown_bars', 10)),
         long=RiskSideConfig(
-            tp_mult=float(long_cfg.get("tp_mult", 27.5)),
-            sl_mult=float(long_cfg.get("sl_mult", 9.0)),
+            tp_mult=float(long_cfg.get('tp_mult', 27.5)),
+            sl_mult=float(long_cfg.get('sl_mult', 9.0)),
         ),
         short=RiskSideConfig(
-            tp_mult=float(short_cfg.get("tp_mult", 15.0)),
-            sl_mult=float(short_cfg.get("sl_mult", 6.5)),
+            tp_mult=float(short_cfg.get('tp_mult', 15.0)),
+            sl_mult=float(short_cfg.get('sl_mult', 6.5)),
         ),
     )
 
-    sf_cfg = cfg.get("shock_flip", {}) or {}
-    shockflip = ShockFlipConfig(
-        source=str(sf_cfg.get("source", "imbalance")),
-        z_window=int(sf_cfg.get("z_window", 240)),
-        z_band=float(sf_cfg.get("z_band", 2.5)),
-        jump_band=float(sf_cfg.get("jump_band", 3.0)),
-        persistence_bars=int(sf_cfg.get("persistence_bars", 6)),
-        persistence_ratio=float(sf_cfg.get("persistence_ratio", 0.60)),
-        dynamic_enabled=bool(sf_cfg.get("dynamic_thresholds", {}).get("enabled", True)),
-        dynamic_percentile=float(sf_cfg.get("dynamic_thresholds", {}).get("percentile", 0.99)),
-        donchian_window=int(sf_cfg.get("location_filter", {}).get("donchian_window", 120)),
-        require_extreme=bool(sf_cfg.get("location_filter", {}).get("require_extreme", True)),
+    # 5. ShockFlip
+    sf = raw.get('shock_flip', {}) or {}
+    sf_cfg = ShockFlipConfig(
+        source=str(sf.get('source', 'imbalance')),
+        z_window=int(sf.get('z_window', 240)),
+        z_band=float(sf.get('z_band', 2.5)),
+        jump_band=float(sf.get('jump_band', 3.0)),
+        persistence_bars=int(sf.get('persistence_bars', 6)),
+        persistence_ratio=float(sf.get('persistence_ratio', 0.6)),
+        dynamic_thresholds=sf.get('dynamic_thresholds', {'enabled': False}),
+        location_filter=sf.get('location_filter', {'donchian_window': 120, 'require_extreme': True})
     )
 
-    bt_cfg = BacktestConfig(
+    # 6. Filters
+    flt = raw.get('filters', {}) or {}
+    filters = FiltersConfig(
+        min_relative_volume=flt.get('min_relative_volume'),
+        min_divergence=flt.get('min_divergence'),
+        vol_regime_low=flt.get('vol_regime_low'),
+        vol_regime_high=flt.get('vol_regime_high'),
+    )
+
+    # 7. Management (optional)
+    mgmt = raw.get('management', {}) or {}
+    
+    return BacktestConfig(
         symbol=symbol,
         tick_dir=tick_dir,
         timeframe=timeframe,
         fees=fees,
         slippage_bp=slippage_bp,
         risk=risk,
-        shockflip=shockflip,
+        shockflip=sf_cfg,
+        filters=filters,
+        mfe_breakeven_r=mgmt.get('mfe_breakeven_r'),
+        time_stop_bars=mgmt.get('time_stop_bars'),
+        time_stop_r=mgmt.get('time_stop_r'),
+        _debug=True
     )
-
-    # Attach internal research knobs (H1/H2/BE) as optional attrs
-    try:
-        filters_cfg = cfg.get("filters", {}) or {}
-        h1_cfg = filters_cfg.get("prior_flow_sign", {}) or {}
-        h2_cfg = filters_cfg.get("price_flow_div", {}) or {}
-
-        # H1 – already used today (keep behaviour)
-        if h1_cfg.get("enabled", False):
-            try:
-                bt_cfg._h1_prior_flow_required_sign = int(h1_cfg.get("required_sign", -1))
-            except Exception:
-                bt_cfg._h1_prior_flow_required_sign = -1
-
-        # H2 – optional divergence gate
-        if h2_cfg.get("enabled", False):
-            mode = str(h2_cfg.get("mode", "dead_zone")).strip().lower()
-            try:
-                if mode == "extreme_only":
-                    bt_cfg._h2_div_mode = "extreme_only"
-                    thr = float(h2_cfg.get("threshold"))
-                    bt_cfg._h2_div_extreme_threshold = thr
-                else:
-                    # default/backward-compat: dead_zone using |div|
-                    bt_cfg._h2_div_mode = "dead_zone"
-                    bt_cfg._h2_div_dead_zone_low = float(h2_cfg.get("dead_zone_low"))
-                    bt_cfg._h2_div_dead_zone_high = float(h2_cfg.get("dead_zone_high"))
-            except Exception:
-                pass
-
-        mfe_cfg = risk_cfg.get("mfe_breakeven", {}) or {}
-        if mfe_cfg.get("enabled", False):
-            try:
-                be_threshold_r = float(mfe_cfg.get("threshold_r", 1.0))
-                if be_threshold_r > 0:
-                    bt_cfg._mfe_breakeven_r = be_threshold_r
-            except Exception:
-                pass
-        # Trailing stop parameters (optional)
-        trailing_cfg = risk_cfg.get("trailing_stop", {}) or {}
-        if trailing_cfg.get("enabled", False):
-            try:
-                bt_cfg._trailing_enabled = True
-                bt_cfg._trailing_arm_r = float(trailing_cfg.get("arm_threshold_r"))
-                bt_cfg._trailing_floor_r = float(trailing_cfg.get("floor_r"))
-                bt_cfg._trailing_gap_r = float(trailing_cfg.get("gap_r"))
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    return bt_cfg
-
 
 def main():
-    parser = argparse.ArgumentParser(description="Run ShockFlip-only backtest.")
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/strategies_shockflip_only.yaml",
-        help="Path to YAML config.",
-    )
-    parser.add_argument(
-        "--out",
-        type=str,
-        default="results/backtest/trades.csv",
-        help="Path to output trades CSV.",
-    )
-    parser.add_argument(
-        "--no-progress",
-        action="store_true",
-        help="Disable progress bar output.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug diagnostics and feature stats.",
-    )
-    args = parser.parse_args()
+    p = argparse.ArgumentParser()
+    p.add_argument('--config', required=True)
+    p.add_argument('--out', required=True)
+    p.add_argument('--debug', action='store_true')
+    args = p.parse_args()
 
-    stage = "init"
-    try:
-        stage = "load_config"
-        cfg = load_config(args.config)
-        bt_cfg = build_backtest_config(cfg)
-        try:
-            setattr(bt_cfg, "_progress", not args.no_progress)
-            setattr(bt_cfg, "_debug", bool(args.debug))
-            # Also propagate to the ShockFlipConfig for internal instrumentation
-            if hasattr(bt_cfg, "shockflip"):
-                setattr(bt_cfg.shockflip, "_debug", bool(args.debug))
-            # H1 gate from config filters
-            h1 = (cfg.get("filters", {}) or {}).get("prior_flow_sign", {}) or {}
-            if bool(h1.get("enabled", False)):
-                setattr(bt_cfg, "_h1_prior_flow_required_sign", int(h1.get("required_sign", -1)))
-            # H3 ATR percentile gate from config filters (optional)
-            atrf = (cfg.get("filters", {}) or {}).get("atr_percentile", {}) or {}
-            if bool(atrf.get("enabled", False)):
-                try:
-                    setattr(bt_cfg, "_h3_atr_pct_low", float(atrf.get("low", 0.0)))
-                    setattr(bt_cfg, "_h3_atr_pct_high", float(atrf.get("high", 1.0)))
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    cfg = build_config(args.config)
+    print(f"--- Config: {args.config} ---")
+    
+    # Print Management Status
+    if cfg.filters.min_relative_volume:
+        print(f"FILTER: Diamond Active (RelVol >= {cfg.filters.min_relative_volume})")
+    
+    if cfg.mfe_breakeven_r:
+        print(f"MANAGEMENT: BreakEven active at {cfg.mfe_breakeven_r}R")
+    else:
+        print("MANAGEMENT: BreakEven OFF (WARNING)")
+        
+    if cfg.time_stop_bars:
+        print(f"MANAGEMENT: Zombie Kill active at Bar {cfg.time_stop_bars} if < {cfg.time_stop_r}R")
+    else:
+        print("MANAGEMENT: Zombie Kill OFF (WARNING)")
 
-        print(f"[Cfg] symbol={bt_cfg.symbol} timeframe={bt_cfg.timeframe}")
-        print(f"[Cfg] tick_dir={bt_cfg.tick_dir}")
+    bars = load_full_history_as_bars(cfg.tick_dir)
+    trades, stats = run_backtest_from_bars(bars, cfg)
 
-        stage = "load_data"
-        bars, source = load_marketdata_as_bars(bt_cfg.tick_dir, timeframe=bt_cfg.timeframe)
-        print(f"[Bars] {len(bars):,} bars (source={source})")
+    print("\n" + "="*40)
+    print(f"RESULTS: {args.config}")
+    print("="*40)
+    print(f"Total Trades:     {stats['n']}")
+    print(f"Win Rate:         {stats['win_rate']*100:.2f}%")
+    print(f"Profit Factor:    {stats['pf']:.2f}")
+    print(f"Total PnL:        {stats['total_pnl']:.4f}")
+    print("="*40)
 
-        stage = "run_backtest"
-        trades, stats = run_backtest_from_bars(bars, bt_cfg)
+    os.makedirs(os.path.dirname(args.out), exist_ok=True)
+    trades.to_csv(args.out, index=False)
+    print(f"Trade log saved to: {args.out}")
 
-        stage = "save_trades"
-        os.makedirs(os.path.dirname(args.out), exist_ok=True)
-        trades.to_csv(args.out, index=False)
-        print(f"[Save] trades -> {args.out} ({len(trades)} rows)")
-
-        print(f"[Stats] n={int(stats.get('n', 0))} win={float(stats.get('win_rate', 0.0)):.3f} PF={float(stats.get('pf', 0.0)):.3f}")
-        # Optional quick diagnostics when no trades
-        if int(stats.get('n', 0)) == 0 and args.debug:
-            try:
-                # Recompute feats to inspect quickly
-                feats = __import__('core.backtest', fromlist=['prepare_features_for_backtest']).prepare_features_for_backtest(bars, bt_cfg)
-                n_sf = int((feats.get('shockflip_signal', 0) != 0).sum()) if 'shockflip_signal' in feats.columns else 0
-                n_atr = int((feats.get('atr', 0) > 0).sum()) if 'atr' in feats.columns else 0
-                print(f"[Diag] n_shockflip={n_sf}, bars_with_atr={n_atr}/{len(feats)}")
-            except Exception:
-                pass
-    except Exception as exc:
-        print("\n[Error] Backtest failed.")
-        print(f"  stage = {stage}")
-        print(f"  config = {args.config}")
-        print(f"  message = {exc}")
-        traceback.print_exc()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

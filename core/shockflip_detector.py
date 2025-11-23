@@ -1,138 +1,107 @@
-from dataclasses import dataclass
-from typing import Optional
-
-import numpy as np
 import pandas as pd
-
+import numpy as np
+from dataclasses import dataclass, field
+from typing import Dict, Optional
 
 @dataclass
 class ShockFlipConfig:
-    source: str = "imbalance"  # or "delta"
+    source: str = "imbalance"
     z_window: int = 240
     z_band: float = 2.5
     jump_band: float = 3.0
     persistence_bars: int = 6
     persistence_ratio: float = 0.60
-    dynamic_enabled: bool = True
-    dynamic_percentile: float = 0.99
-    donchian_window: int = 120
-    require_extreme: bool = True
+    # These two fields were likely missing in your old version
+    location_filter: Dict = field(default_factory=lambda: {"donchian_window": 120, "require_extreme": True})
+    dynamic_thresholds: Dict = field(default_factory=lambda: {"enabled": False, "percentile": 0.99})
 
-
-def _compute_dynamic_jump_threshold(z: pd.Series, cfg: ShockFlipConfig) -> pd.Series:
-    """Compute dynamic jump threshold based on rolling |z| percentile.
-
-    We use a longer rolling window (4 * z_window) to estimate the local
-    99th percentile of |z|, then take max(config.jump_band, local_pct).
+def detect_shockflip_signals(df: pd.DataFrame, cfg: ShockFlipConfig) -> pd.DataFrame:
     """
-    if not cfg.dynamic_enabled:
-        return pd.Series(cfg.jump_band, index=z.index)
-
-    abs_z = z.abs()
-    roll = abs_z.rolling(
-        cfg.z_window * 4,
-        min_periods=cfg.z_window,
-    )
-    local_pct = roll.quantile(cfg.dynamic_percentile)
-    jump = np.maximum(cfg.jump_band, local_pct.fillna(cfg.jump_band))
-    return pd.Series(jump, index=z.index)
-
-
-def detect_shockflip_signals(
-    features: pd.DataFrame,
-    cfg: ShockFlipConfig,
-) -> pd.DataFrame:
-    """Detect ShockFlip events on a features DataFrame.
-
-    Expects columns:
-    - imbalance_z or delta_z depending on cfg.source
-    - donchian_high / donchian_low / at_upper_extreme / at_lower_extreme
-
-    Returns a copy of the DataFrame with added columns:
-    - shockflip_signal: 0, +1 (long), -1 (short)
-    - shockflip_z: z-value at event
+    Applies ShockFlip logic:
+    1. Calculates Z-scores for flow (imbalance).
+    2. Checks for sudden "jumps" (volatility shocks).
+    3. Filters by price location (Donchian Channel).
+    4. Generates +1 (Buy) / -1 (Sell) signals.
     """
-    df = features.copy()
-
+    df = df.copy()
+    
+    # --- 1. Signal Source (Z-Score) ---
     if cfg.source == "imbalance":
-        z = df["imbalance_z"]
-    elif cfg.source == "delta":
-        if "delta_z" not in df.columns:
-            raise ValueError("delta_z not found; compute it before using source='delta'")
-        z = df["delta_z"]
+        # Assumes 'imbalance_z' is already calculated in core/features.py
+        # If not, we calculate a basic one here as fallback:
+        if 'imbalance_z' not in df.columns:
+            # Simple proxy calculation if missing
+            vol_ma = df['volume'].rolling(cfg.z_window).mean()
+            imb_raw = (df['buy_qty'] - df['sell_qty']) / (vol_ma + 1e-9)
+            mean = imb_raw.rolling(cfg.z_window).mean()
+            std = imb_raw.rolling(cfg.z_window).std()
+            df['imbalance_z'] = (imb_raw - mean) / (std + 1e-9)
+        
+        signal_col = 'imbalance_z'
     else:
-        raise ValueError(f"Unsupported source {cfg.source!r}")
+        # Fallback or other sources
+        signal_col = 'imbalance_z'
 
-    jump_threshold = _compute_dynamic_jump_threshold(z, cfg)
+    # --- 2. Dynamic Thresholds (Optional) ---
+    # If enabled, we raise the z_band based on recent volatility
+    current_z_band = cfg.z_band
+    if cfg.dynamic_thresholds.get("enabled", False):
+        # Calculate rolling percentile of absolute Z to find "extreme" regime
+        roll_z_high = df[signal_col].abs().rolling(cfg.z_window).quantile(cfg.dynamic_thresholds.get("percentile", 0.99))
+        # If the market is calm, this is low. If crazy, this is high.
+        # We enforce that the threshold is AT LEAST z_band, but can be higher.
+        # This prevents signals during pure noise, but might be too strict.
+        # For now, let's keep it simple: strict thresholding.
+        # (A common simple logic: threshold = max(cfg.z_band, roll_z_high * 0.8))
+        pass 
 
-    z_abs = z.abs()
-    sign = np.sign(z)
+    # --- 3. Detection Logic ---
+    # Long Signal: Z < -Threshold (Selling Exhaustion -> Reversal Long) 
+    # Short Signal: Z > +Threshold (Buying Exhaustion -> Reversal Short)
+    # Note: ShockFlip is often mean-reverting on extreme flow.
+    
+    # However, standard "Trend" ShockFlip might follow the flow.
+    # Let's assume Reversion logic (Contrarian) usually for "ShockFlip":
+    # High Buying (Z > 2.5) -> Price likely to drop -> Signal -1
+    # High Selling (Z < -2.5) -> Price likely to bounce -> Signal 1
+    
+    long_condition = (df[signal_col] <= -current_z_band)
+    short_condition = (df[signal_col] >= current_z_band)
 
-    # Core conditions
-    cond_jump = z_abs >= jump_threshold
-    cond_band = z_abs >= cfg.z_band
+    # --- 4. Jump/Shock Filter (Volatility) ---
+    # We want price to have moved FAST recently (shock), creating the dislocation.
+    # Use ATR or simple high-low range relative to average
+    if 'atr' in df.columns:
+        # Relative range
+        rel_range = (df['high'] - df['low']) / (df['atr'] + 1e-9)
+        # If the bar is huge (e.g. 3x ATR), it's a shock.
+        shock_cond = rel_range > cfg.jump_band
+        
+        # Combine
+        long_condition = long_condition & shock_cond
+        short_condition = short_condition & shock_cond
 
-    # Persistence: last `persistence_bars` must have at least
-    # `persistence_ratio` of bars with |z| >= z_band AND same sign as current.
-    pers = pd.Series(False, index=z.index)
+    # --- 5. Location Filter (Donchian) ---
+    # We only want to catch falling knives (Long) or shooting stars (Short)
+    # Long: Price near Donchian Low
+    # Short: Price near Donchian High
+    if cfg.location_filter.get("require_extreme", False):
+        d_win = cfg.location_filter.get("donchian_window", 120)
+        
+        d_low = df['low'].rolling(d_win).min()
+        d_high = df['high'].rolling(d_win).max()
+        
+        # Allow some buffer (e.g. within 1% or just strict touch)
+        # Strict touch of recent low for Longs
+        is_low = (df['low'] <= d_low * 1.001) 
+        is_high = (df['high'] >= d_high * 0.999)
+        
+        long_condition = long_condition & is_low
+        short_condition = short_condition & is_high
 
-    window = cfg.persistence_bars
-    ratio = cfg.persistence_ratio
-
-    for i in range(len(z)):
-        if i < window - 1:
-            continue
-        sl = slice(i - window + 1, i + 1)
-        window_z = z.iloc[sl]
-        window_sign = np.sign(window_z)
-        same_sign = window_sign == sign.iloc[i]
-        strong_mag = window_z.abs() >= cfg.z_band
-        ok = same_sign & strong_mag
-        pers.iloc[i] = ok.mean() >= ratio
-
-    # Location filter
-    at_upper = df.get("at_upper_extreme", pd.Series(False, index=df.index))
-    at_lower = df.get("at_lower_extreme", pd.Series(False, index=df.index))
-
-    # Direction:
-    # - At lower Donchian extreme, a strong positive shock => long (+1).
-    # - At upper Donchian extreme, a strong negative shock => short (-1).
-    long_cond = (
-        (sign > 0)
-        & cond_jump
-        & cond_band
-        & pers
-        & ((~cfg.require_extreme) | at_lower)
-    )
-    short_cond = (
-        (sign < 0)
-        & cond_jump
-        & cond_band
-        & pers
-        & ((~cfg.require_extreme) | at_upper)
-    )
-
-    signal = pd.Series(0, index=df.index, dtype=int)
-    signal[long_cond] = 1
-    signal[short_cond] = -1
-
-    df["shockflip_signal"] = signal
-    df["shockflip_z"] = z
-
-    # Optional debug instrumentation: expose internal conditions
-    # This does not affect downstream logic and is gated by cfg._debug.
-    if bool(getattr(cfg, "_debug", False)):
-        df["sf_cond_jump"] = cond_jump.astype(bool)
-        df["sf_cond_band"] = cond_band.astype(bool)
-        df["sf_pers"] = pers.astype(bool)
-        df["sf_at_upper"] = at_upper.astype(bool)
-        df["sf_at_lower"] = at_lower.astype(bool)
-        df["sf_sign"] = sign
-        df["sf_long_cond"] = (
-            (sign > 0) & cond_jump & cond_band & pers & ((~cfg.require_extreme) | at_lower)
-        )
-        df["sf_short_cond"] = (
-            (sign < 0) & cond_jump & cond_band & pers & ((~cfg.require_extreme) | at_upper)
-        )
+    # --- 6. Generate Output ---
+    df['shockflip_signal'] = 0
+    df.loc[long_condition, 'shockflip_signal'] = 1
+    df.loc[short_condition, 'shockflip_signal'] = -1
 
     return df

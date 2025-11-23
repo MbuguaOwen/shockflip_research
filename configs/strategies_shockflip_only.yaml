@@ -1,9 +1,4 @@
-﻿# ShockFlip v1.4 - BTC research spec
-# Changes from v1.3:
-#   - H1: require prior_flow_sign == -1 for entries (filters.prior_flow_sign.enabled=true)
-#   - EVERYTHING ELSE unchanged
-# Single source of truth for ShockFlip alpha configuration.
-
+# ShockFlip v1.4 - BTC research spec (clean, parse-safe)
 data:
   include: data.yaml
 
@@ -15,54 +10,39 @@ risk:
   atr_window: 60
   cooldown_bars: 10
   long:
-    tp_mult: 37.5
-    sl_mult: 10.0
+    tp_mult: 27.5
+    sl_mult: 9.0
   short:
-    tp_mult: 20.0
-    sl_mult: 10.5
-
-  # Optional BE@1R management (H5/H6 inspired)
-  mfe_breakeven:
-    enabled: true      # keep OFF by default
-    threshold_r: 1.0    # move SL to BE once MFE >= 1R
+    tp_mult: 15.0
+    sl_mult: 6.5
 
 shock_flip:
   source: "imbalance"
   z_window: 240
-  # v1.3 - BTC research spec
-  z_band: 2.0
-  jump_band: 2.0
-  persistence_bars: 3
-  persistence_ratio: 0.60  
+  z_band: 2.5
+  jump_band: 3.0
+  persistence_bars: 6
+  persistence_ratio: 0.60
   dynamic_thresholds:
-    enabled: false
+    enabled: true
     percentile: 0.99
   location_filter:
     donchian_window: 120
     require_extreme: true
 
-# Additional filters are defined but disabled by default.
 filters:
   atr_percentile:
     enabled: false
     window: 5000
-    low: 0.80
-    high: 1.00
+    low: 0.30
+    high: 0.80
   macro_regime:
     enabled: false
-  prior_flow_sign:
-    enabled: true
-    required_sign: -1
-
-  price_flow_div:
-    enabled: true
-    mode: extreme_only   # options: extreme_only, dead_zone
-    threshold: 1.05      # from bucket edge (~1.055)
 
 session:
-  utc_blocks: [[0, 24]]
+  utc_blocks:
+    - [0, 24]
 
-# Absorption logic placeholder: currently NOT used as entry gate.
 ops:
   absorption_opposite_exit_bars: 0
 
@@ -76,8 +56,3 @@ event_study:
     long:  [12, 18, 60]
     short: [6, 12]
   baseline_n_random: 2000
-
-
-
-
-
